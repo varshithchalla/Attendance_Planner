@@ -234,7 +234,7 @@ with tab_landing:
         st.markdown("""
         1. **Log in to Portal:** Open your **College Web Portal** in a browser (*do not use the mobile app*).
         2. **Navigate to Calendar:** Go to **Attendance Tab** ➔ **Calendar**.
-        3. **Set Custom Date Range:** Set the range **From:** `29 June 2026` **To:** `Current Date`.
+        3. **Set Custom Date Range:** Set the range **From:** `29 June 2026 or whenever your classes started` **To:** `Current Date`.
         4. **Count Classes Per Subject:** 
            * Use the search bar to filter for each subject name one by one.
            * Count the **Total Classes Conducted** and **Number of Classes Attended**.
