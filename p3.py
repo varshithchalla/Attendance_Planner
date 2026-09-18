@@ -24,7 +24,6 @@ def get_gspread_client():
         "https://www.googleapis.com/auth/drive"
     ]
     
-    # Read secrets from Streamlit Secrets
     creds_dict = {
         "type": st.secrets["connections"]["gsheets"]["type"],
         "project_id": st.secrets["connections"]["gsheets"]["project_id"],
@@ -61,7 +60,7 @@ def load_saved_data(user_id):
                     raw_json = user_row.iloc[0]["data"]
                     return json.loads(raw_json)
     except Exception as e:
-        st.sidebar.error(f"Read Error: {e}")
+        st.sidebar.error(f"Read Error Details: {type(e).__name__} - {str(e)}")
     return None
 
 def save_data():
@@ -94,12 +93,11 @@ def save_data():
         else:
             df = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
 
-        # Clear and update entire worksheet safely
         ws.clear()
         ws.update([df.columns.values.tolist()] + df.values.tolist())
         st.toast("Saved to Google Sheets!", icon="☁️")
     except Exception as e:
-        st.error(f"Save Failed: {e}")
+        st.error(f"Save Error Details: {type(e).__name__} - {str(e)}")
 
 # --- PROFILE & DYNAMIC PERSISTENCE ---
 st.sidebar.title("👤 User Profile")
@@ -233,13 +231,57 @@ tab_landing, tab_today, tab_analytics, tab_manage, tab_timetable = st.tabs([
     "🚀 How to Use", "🔥 Daily Check-in", "📊 Subject Analytics", "⚙️ Manage Subjects", "🗓️ Set Timetable"
 ])
 
+# --- HOW TO USE TAB (EXACT INSTRUCTIONS) ---
 with tab_landing:
     st.markdown("## 👋 Welcome to Your Smart Attendance Planner")
-    st.write("Never get caught off-guard by attendance shortages again. Cloud database active—your stats auto-save in real time!")
+    st.write("Never get caught off-guard by attendance shortages again. Cloud database active—your stats auto-save in real time across sessions!")
+
+    st.divider()
+
+    st.markdown("### 📌 Quick Start Guide")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info("**Step 1: Profile Setup**\nEnter your Roll Number in the sidebar and click **Load / Switch Profile** to create or retrieve your cloud database save.")
+    with col2:
+        st.warning("**Step 2: Initialize Subjects**\nHead over to **⚙️ Manage Subjects** to input your current attended and total conducted classes directly from your college portal.")
+    with col3:
+        st.success("**Step 3: Track Daily**\nUse **🔥 Daily Check-in** to mark classes as **Attended** or **Skipped** with a single click after every class.")
+
+    st.divider()
+
+    with st.expander("🗓️ Setting Up & Managing Your Weekly Timetable"):
+        st.markdown("""
+        * Navigate to the **🗓️ Set Timetable** tab.
+        * Select a day of the week from the dropdown menu.
+        * Pick an added subject, set its start/end time, and click **Add to Schedule**.
+        * **Daily Auto-Filtering:** Your **🔥 Daily Check-in** tab automatically pulls and displays only today's scheduled classes sorted chronologically by start time.
+        * **Saturday Timetable Swap:** If your college operates a Saturday swap rule (e.g., Saturday follows a Monday schedule), configure the swap selector on the **Set Timetable** tab to automatically map the correct timetable.
+        """)
+
+    with st.expander("📊 Understanding Attendance Percentage & Bunk Calculations"):
+        st.markdown("""
+        * **Exact Calculation Logic:** Your attendance is tracked down to precise decimal values matching the official college portal without artificial ceiling rounding.
+        * **Minimum Portal Target:** Adjust the slider at the top (default 75%) to set your target threshold.
+        * **SAFE Status:** Tells you the exact maximum number of consecutive classes you can safely skip while staying strictly at or above your target percentage.
+        * **SHORTAGE Status:** Calculates the exact number of consecutive upcoming classes you must attend without skipping to recover back to your target percentage.
+        """)
+
+    with st.expander("🏖️ Handling Holidays, Cancellations & Backups"):
+        st.markdown("""
+        * **Mark Today as Holiday:** If classes are unexpectedly canceled today, check the holiday box in **🔥 Daily Check-in** to hide today's class cards without modifying your recorded stats.
+        * **Global Holiday Mode:** Toggle in the sidebar during mid-sems, semester breaks, or vacations to pause daily schedule prompts.
+        * **Cloud Sync & Local Backups:** All updates save directly to Google Sheets under your Roll Number. You can also export or import a local JSON backup anytime via the sidebar **Backup & Restore** section.
+        """)
 
 with tab_today:
-    st.subheader(f"Today's Scheduled Classes ({today_name})")
-    todays_classes = st.session_state.timetable.get(today_name, [])
+    effective_today = today_name
+    if today_name == "Saturday" and st.session_state.saturday_swap_day != "None":
+        effective_today = st.session_state.saturday_swap_day
+        st.info(f"🔄 Saturday Schedule Swapped: Following **{effective_today}** Timetable")
+
+    st.subheader(f"Today's Scheduled Classes ({effective_today})")
+    todays_classes = st.session_state.timetable.get(effective_today, [])
     todays_classes_sorted = sorted(todays_classes, key=lambda x: parse_time_obj(x.get("start_time", "00:00")))
 
     is_today_cancelled = st.checkbox("🎉 Mark Today as Holiday / No Classes", value=st.session_state.today_is_holiday)
@@ -264,7 +306,12 @@ with tab_today:
             with grid_cols[idx % 2]:
                 with st.container(border=True):
                     st.markdown(f"### 📖 {sub_name}")
-                    st.caption(f"Portal Attendance: **{display_pct}%**")
+                    st.caption(f"Time: {item.get('start_time')} - {item.get('end_time')} | Portal Attendance: **{display_pct}%**")
+                    if status_type == "SAFE":
+                        st.success(f"🟢 SAFE: You can skip **{val_num}** class(es)")
+                    elif status_type == "SHORTAGE":
+                        st.error(f"🔴 SHORTAGE: Attend next **{val_num}** class(es)")
+                    
                     btn_att, btn_skip = st.columns(2)
                     if btn_att.button("✅ Attended", key=f"att_{idx}", use_container_width=True):
                         st.session_state.subjects[sub_name]["attended"] += 1
@@ -281,11 +328,23 @@ with tab_analytics:
     for sub_name, data in st.session_state.subjects.items():
         raw_pct, display_pct, val_num, status_type = calculate_skip_status(data["attended"], data["total"], target)
         with st.container(border=True):
-            st.markdown(f"### 📖 {sub_name}: **{display_pct}%** (Attended {data['attended']}/{data['total']})")
+            cols = st.columns([3, 2, 2])
+            with cols[0]:
+                st.markdown(f"### 📖 {sub_name}")
+                st.caption(f"Attended: **{data['attended']}** / Total: **{data['total']}**")
+            with cols[1]:
+                st.metric("Portal Attendance", f"{display_pct}%", delta=f"{round(display_pct - target, 2)}% vs target")
+            with cols[2]:
+                if status_type == "SAFE":
+                    st.success(f"Safe Skips Available: **{val_num}**")
+                elif status_type == "SHORTAGE":
+                    st.error(f"Classes Needed: **{val_num}**")
 
 with tab_manage:
-    st.subheader("➕ Manage Subjects")
+    st.subheader("⚙️ Manage Subjects")
+    
     with st.form("add_new_sub"):
+        st.markdown("#### ➕ Add New Subject")
         n_name = st.text_input("Subject Name")
         n_att = st.number_input("Classes Attended", min_value=0, value=0)
         n_tot = st.number_input("Total Classes Conducted", min_value=1, value=1)
@@ -295,18 +354,62 @@ with tab_manage:
                 save_data()
                 st.rerun()
 
+    st.divider()
+    st.markdown("#### ✏️ Update / Delete Existing Subjects")
+    for s_name in list(st.session_state.subjects.keys()):
+        with st.expander(f"Edit {s_name}"):
+            c1, c2, c3 = st.columns([2, 2, 1])
+            new_att = c1.number_input(f"Attended ({s_name})", min_value=0, value=st.session_state.subjects[s_name]["attended"], key=f"edit_att_{s_name}")
+            new_tot = c2.number_input(f"Total ({s_name})", min_value=1, value=st.session_state.subjects[s_name]["total"], key=f"edit_tot_{s_name}")
+            
+            if c3.button("Save Changes", key=f"save_{s_name}"):
+                st.session_state.subjects[s_name]["attended"] = int(new_att)
+                st.session_state.subjects[s_name]["total"] = int(new_tot)
+                save_data()
+                st.rerun()
+                
+            if c3.button("🗑️ Delete", key=f"del_{s_name}"):
+                del st.session_state.subjects[s_name]
+                save_data()
+                st.rerun()
+
 with tab_timetable:
     st.subheader("🗓️ Set Timetable")
-    selected_day = st.selectbox("Select Day", DAYS)
+    
+    swap_choice = st.selectbox("Saturday Timetable Order Swap:", ["None"] + WEEKDAYS, index=["None"] + WEEKDAYS.index(st.session_state.saturday_swap_day) if st.session_state.saturday_swap_day in WEEKDAYS else 0)
+    if swap_choice != st.session_state.saturday_swap_day:
+        st.session_state.saturday_swap_day = swap_choice
+        save_data()
+        st.rerun()
+
+    st.divider()
+    
+    selected_day = st.selectbox("Select Day to Manage Schedule:", DAYS)
     available_subjects = list(st.session_state.subjects.keys())
+    
     if available_subjects:
         with st.form(key=f"tt_form_{selected_day}"):
             f_sub = st.selectbox("Subject", available_subjects)
             t_start = st.time_input("Start Time", value=time(9,0))
             t_end = st.time_input("End Time", value=time(10,0))
-            if st.form_submit_button("Add to Schedule"):
+            if st.form_submit_button("Add Class to Schedule"):
                 st.session_state.timetable[selected_day].append({
                     "subject": f_sub, "start_time": t_start.strftime("%H:%M"), "end_time": t_end.strftime("%H:%M")
                 })
+                save_data()
+                st.rerun()
+    else:
+        st.warning("Please add at least one subject in 'Manage Subjects' before setting up the timetable.")
+
+    st.markdown(f"### Current Schedule for **{selected_day}**")
+    day_schedule = st.session_state.timetable.get(selected_day, [])
+    if not day_schedule:
+        st.info("No classes scheduled for this day.")
+    else:
+        for idx, item in enumerate(day_schedule):
+            c1, c2 = st.columns([4, 1])
+            c1.write(f"📖 **{item['subject']}** ({item['start_time']} - {item['end_time']})")
+            if c2.button("Remove", key=f"rem_{selected_day}_{idx}"):
+                st.session_state.timetable[selected_day].pop(idx)
                 save_data()
                 st.rerun()
