@@ -21,12 +21,12 @@ def load_saved_data(user_id):
     try:
         df = conn.read(ttl=0)
         if df is not None and not df.empty and "user_id" in df.columns:
-            user_row = df[df["user_id"].astype(str) == str(user_id)]
+            user_row = df[df["user_id"].astype(str).str.strip().str.lower() == str(user_id).strip().lower()]
             if not user_row.empty:
                 raw_json = user_row.iloc[0]["data"]
                 return json.loads(raw_json)
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.error(f"Read Error: {e}")
     return None
 
 def save_data():
@@ -45,23 +45,24 @@ def save_data():
     try:
         df = conn.read(ttl=0)
         json_str = json.dumps(data_payload)
+        curr_id = str(st.session_state.user_id).strip().lower()
+
+        import pandas as pd
         
         if df is None or df.empty or "user_id" not in df.columns:
-            import pandas as pd
-            df = pd.DataFrame([{"user_id": str(st.session_state.user_id), "data": json_str}])
+            df = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
         else:
-            df["user_id"] = df["user_id"].astype(str)
-            curr_id = str(st.session_state.user_id)
+            df["user_id"] = df["user_id"].astype(str).str.strip().str.lower()
             if curr_id in df["user_id"].values:
                 df.loc[df["user_id"] == curr_id, "data"] = json_str
             else:
-                import pandas as pd
                 new_row = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
                 df = pd.concat([df, new_row], ignore_index=True)
                 
         conn.update(data=df)
+        st.toast("Saved to Google Sheets!", icon="☁️")
     except Exception as e:
-        st.error(f"Error saving to Cloud DB: {e}")
+        st.error(f"Save Failed: {e}")
 
 # --- PROFILE & DYNAMIC PERSISTENCE ---
 st.sidebar.title("👤 User Profile")
@@ -69,53 +70,54 @@ st.sidebar.title("👤 User Profile")
 if "user_id" not in st.session_state:
     st.session_state.user_id = "default_user"
 
-profile_input = st.sidebar.text_input(
-    "Enter Profile Name / Roll No:", 
-    value=st.session_state.user_id,
-    help="Each roll number gets its own cloud save slot."
-)
+with st.sidebar.form("profile_form"):
+    profile_input = st.text_input("Enter Roll No / Profile:", value=st.session_state.user_id)
+    submit_profile = st.form_submit_button("Load / Switch Profile")
 
-clean_user_id = "".join(c for c in profile_input.strip().lower() if c.isalnum() or c in ("_", "-")) or "default_user"
-
-if clean_user_id != st.session_state.user_id:
-    st.session_state.user_id = clean_user_id
-    for key in ["subjects", "timetable", "target", "today_is_holiday", "holiday_mode", "saturday_swap_day"]:
-        if key in st.session_state:
-            del st.session_state[key]
+if submit_profile:
+    clean_id = "".join(c for c in profile_input.strip().lower() if c.isalnum() or c in ("_", "-")) or "default_user"
+    st.session_state.user_id = clean_id
+    
+    fetched = load_saved_data(clean_id)
+    if fetched:
+        st.session_state.subjects = fetched.get("subjects", {})
+        st.session_state.timetable = fetched.get("timetable", {})
+        st.session_state.target = fetched.get("target", 75)
+        st.session_state.saturday_swap_day = fetched.get("saturday_swap_day", "None")
+        st.sidebar.success(f"Loaded profile: {clean_id}")
+    else:
+        st.sidebar.info(f"New profile created: {clean_id}")
     st.rerun()
 
-# --- INITIALIZE STATE FROM GOOGLE SHEETS ---
-saved_data = load_saved_data(st.session_state.user_id)
-
+# --- INITIALIZE SESSION STATE ---
 if "subjects" not in st.session_state:
-    st.session_state.subjects = saved_data.get("subjects", {}) if saved_data else {
-        "Data Structures": {"attended": 18, "total": 20},
-        "Database Systems": {"attended": 11, "total": 16},
-        "Operating Systems": {"attended": 10, "total": 15},
-    }
-
-if "timetable" not in st.session_state:
-    st.session_state.timetable = saved_data.get("timetable", {}) if saved_data else {
-        "Monday": [{"subject": "Data Structures", "start_time": "09:00", "end_time": "10:00"}],
-        "Tuesday": [{"subject": "Database Systems", "start_time": "11:15", "end_time": "12:15"}],
-        "Wednesday": [{"subject": "Data Structures", "start_time": "09:00", "end_time": "10:00"}],
-        "Thursday": [{"subject": "Operating Systems", "start_time": "10:00", "end_time": "11:00"}],
-        "Friday": [{"subject": "Data Structures", "start_time": "09:00", "end_time": "10:00"}],
-        "Saturday": [],
-        "Sunday": []
-    }
-
-if "target" not in st.session_state:
-    st.session_state.target = saved_data.get("target", 75) if saved_data else 75
-
-if "today_is_holiday" not in st.session_state:
-    st.session_state.today_is_holiday = saved_data.get("today_is_holiday", False) if saved_data else False
-
-if "holiday_mode" not in st.session_state:
-    st.session_state.holiday_mode = saved_data.get("holiday_mode", False) if saved_data else False
-
-if "saturday_swap_day" not in st.session_state:
-    st.session_state.saturday_swap_day = saved_data.get("saturday_swap_day", "None") if saved_data else "None"
+    loaded = load_saved_data(st.session_state.user_id)
+    if loaded:
+        st.session_state.subjects = loaded.get("subjects", {})
+        st.session_state.timetable = loaded.get("timetable", {})
+        st.session_state.target = loaded.get("target", 75)
+        st.session_state.today_is_holiday = loaded.get("today_is_holiday", False)
+        st.session_state.holiday_mode = loaded.get("holiday_mode", False)
+        st.session_state.saturday_swap_day = loaded.get("saturday_swap_day", "None")
+    else:
+        st.session_state.subjects = {
+            "Data Structures": {"attended": 18, "total": 20},
+            "Database Systems": {"attended": 11, "total": 16},
+            "Operating Systems": {"attended": 10, "total": 15},
+        }
+        st.session_state.timetable = {
+            "Monday": [{"subject": "Data Structures", "start_time": "09:00", "end_time": "10:00"}],
+            "Tuesday": [{"subject": "Database Systems", "start_time": "11:15", "end_time": "12:15"}],
+            "Wednesday": [{"subject": "Data Structures", "start_time": "09:00", "end_time": "10:00"}],
+            "Thursday": [{"subject": "Operating Systems", "start_time": "10:00", "end_time": "11:00"}],
+            "Friday": [{"subject": "Data Structures", "start_time": "09:00", "end_time": "10:00"}],
+            "Saturday": [],
+            "Sunday": []
+        }
+        st.session_state.target = 75
+        st.session_state.today_is_holiday = False
+        st.session_state.holiday_mode = False
+        st.session_state.saturday_swap_day = "None"
 
 def format_time_12h(time_str):
     try:
@@ -141,7 +143,7 @@ def calculate_skip_status(attended, total, target_pct):
         needed = math.ceil((target_pct * total - 100 * attended) / (100 - target_pct))
         return raw_pct, display_pct, max(0, needed), "SHORTAGE"
 
-# --- SIDEBAR FOR BACKUP & RESTORE ---
+# --- SIDEBAR BACKUP & RESTORE ---
 st.sidebar.divider()
 st.sidebar.title("⚙️ Backup & Restore")
 
@@ -182,7 +184,7 @@ if holiday_toggle != st.session_state.holiday_mode:
     save_data()
     st.rerun()
 
-# --- HEADER SECTION ---
+# --- MAIN UI ---
 st.title("📅 Automated Attendance Planner")
 st.caption(f"Active Profile: **{st.session_state.user_id}** | Today is **{today_name}** ({now_dt.strftime('%b %d, %Y')}) — Current Time: **{now_dt.strftime('%I:%M %p')}**")
 
