@@ -4,7 +4,7 @@ import json
 from datetime import datetime, time
 from streamlit_gsheets import GSheetsConnection
 
-# Enable full widescreen mode
+# Enable widescreen mode
 st.set_page_config(page_title="Automated Attendance Planner", page_icon="📅", layout="wide")
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -19,14 +19,14 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_saved_data(user_id):
     try:
-        df = conn.read(ttl=0) # Read fresh data directly from sheet
-        if not df.empty and "user_id" in df.columns:
-            user_row = df[df["user_id"] == user_id]
+        df = conn.read(ttl=0)
+        if df is not None and not df.empty and "user_id" in df.columns:
+            user_row = df[df["user_id"].astype(str) == str(user_id)]
             if not user_row.empty:
                 raw_json = user_row.iloc[0]["data"]
                 return json.loads(raw_json)
-    except Exception as e:
-        st.sidebar.warning(f"Connecting to Cloud DB... ({e})")
+    except Exception:
+        pass
     return None
 
 def save_data():
@@ -46,15 +46,17 @@ def save_data():
         df = conn.read(ttl=0)
         json_str = json.dumps(data_payload)
         
-        if df.empty or "user_id" not in df.columns:
+        if df is None or df.empty or "user_id" not in df.columns:
             import pandas as pd
-            df = pd.DataFrame([{"user_id": st.session_state.user_id, "data": json_str}])
+            df = pd.DataFrame([{"user_id": str(st.session_state.user_id), "data": json_str}])
         else:
-            if st.session_state.user_id in df["user_id"].values:
-                df.loc[df["user_id"] == st.session_state.user_id, "data"] = json_str
+            df["user_id"] = df["user_id"].astype(str)
+            curr_id = str(st.session_state.user_id)
+            if curr_id in df["user_id"].values:
+                df.loc[df["user_id"] == curr_id, "data"] = json_str
             else:
                 import pandas as pd
-                new_row = pd.DataFrame([{"user_id": st.session_state.user_id, "data": json_str}])
+                new_row = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
                 df = pd.concat([df, new_row], ignore_index=True)
                 
         conn.update(data=df)
