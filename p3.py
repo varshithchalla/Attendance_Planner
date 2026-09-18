@@ -2,7 +2,9 @@ import streamlit as st
 import math
 import json
 from datetime import datetime, time
-from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Enable widescreen mode
 st.set_page_config(page_title="Automated Attendance Planner", page_icon="📅", layout="wide")
@@ -14,17 +16,50 @@ now_dt = datetime.now()
 today_name = now_dt.strftime("%A")
 current_time = now_dt.time()
 
-# --- GOOGLE SHEETS CONNECTION ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+# --- GOOGLE SHEETS DIRECT CONNECTION (GSPREAD) ---
+@st.cache_resource
+def get_gspread_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    
+    # Read secrets from Streamlit Secrets
+    creds_dict = {
+        "type": st.secrets["connections"]["gsheets"]["type"],
+        "project_id": st.secrets["connections"]["gsheets"]["project_id"],
+        "private_key_id": st.secrets["connections"]["gsheets"]["private_key_id"],
+        "private_key": st.secrets["connections"]["gsheets"]["private_key"],
+        "client_email": st.secrets["connections"]["gsheets"]["client_email"],
+        "client_id": st.secrets["connections"]["gsheets"]["client_id"],
+        "auth_uri": st.secrets["connections"]["gsheets"]["auth_uri"],
+        "token_uri": st.secrets["connections"]["gsheets"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["connections"]["gsheets"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["connections"]["gsheets"]["client_x509_cert_url"],
+    }
+    
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client
+
+def get_worksheet():
+    client = get_gspread_client()
+    sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    spreadsheet = client.open_by_url(sheet_url)
+    return spreadsheet.sheet1
 
 def load_saved_data(user_id):
     try:
-        df = conn.read(ttl=0)
-        if df is not None and not df.empty and "user_id" in df.columns:
-            user_row = df[df["user_id"].astype(str).str.strip().str.lower() == str(user_id).strip().lower()]
-            if not user_row.empty:
-                raw_json = user_row.iloc[0]["data"]
-                return json.loads(raw_json)
+        ws = get_worksheet()
+        records = ws.get_all_records()
+        if records:
+            df = pd.DataFrame(records)
+            if "user_id" in df.columns:
+                df["user_id"] = df["user_id"].astype(str).str.strip().str.lower()
+                user_row = df[df["user_id"] == str(user_id).strip().lower()]
+                if not user_row.empty:
+                    raw_json = user_row.iloc[0]["data"]
+                    return json.loads(raw_json)
     except Exception as e:
         st.sidebar.error(f"Read Error: {e}")
     return None
@@ -43,23 +78,25 @@ def save_data():
     }
     
     try:
-        df = conn.read(ttl=0)
+        ws = get_worksheet()
+        records = ws.get_all_records()
         json_str = json.dumps(data_payload)
         curr_id = str(st.session_state.user_id).strip().lower()
 
-        import pandas as pd
-        
-        if df is None or df.empty or "user_id" not in df.columns:
-            df = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
-        else:
+        if records:
+            df = pd.DataFrame(records)
             df["user_id"] = df["user_id"].astype(str).str.strip().str.lower()
             if curr_id in df["user_id"].values:
                 df.loc[df["user_id"] == curr_id, "data"] = json_str
             else:
                 new_row = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
                 df = pd.concat([df, new_row], ignore_index=True)
-                
-        conn.update(data=df)
+        else:
+            df = pd.DataFrame([{"user_id": curr_id, "data": json_str}])
+
+        # Clear and update entire worksheet safely
+        ws.clear()
+        ws.update([df.columns.values.tolist()] + df.values.tolist())
         st.toast("Saved to Google Sheets!", icon="☁️")
     except Exception as e:
         st.error(f"Save Failed: {e}")
@@ -83,6 +120,8 @@ if submit_profile:
         st.session_state.subjects = fetched.get("subjects", {})
         st.session_state.timetable = fetched.get("timetable", {})
         st.session_state.target = fetched.get("target", 75)
+        st.session_state.today_is_holiday = fetched.get("today_is_holiday", False)
+        st.session_state.holiday_mode = fetched.get("holiday_mode", False)
         st.session_state.saturday_swap_day = fetched.get("saturday_swap_day", "None")
         st.sidebar.success(f"Loaded profile: {clean_id}")
     else:
@@ -118,12 +157,6 @@ if "subjects" not in st.session_state:
         st.session_state.today_is_holiday = False
         st.session_state.holiday_mode = False
         st.session_state.saturday_swap_day = "None"
-
-def format_time_12h(time_str):
-    try:
-        return datetime.strptime(time_str, "%H:%M").strftime("%I:%M %p").lstrip("0")
-    except ValueError:
-        return time_str
 
 def parse_time_obj(time_str):
     try:
